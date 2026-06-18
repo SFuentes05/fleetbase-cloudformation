@@ -39,6 +39,7 @@ API_HOST="https://${API_SUB}.${ROOT_DOMAIN}"
 DB_CREDS="$(aws secretsmanager get-secret-value --secret-id "$DB_SECRET_ARN" --query SecretString --output text --region "$AWS_REGION")"
 DB_USER="$(echo "$DB_CREDS" | jq -r .username)"
 DB_PASS="$(echo "$DB_CREDS" | jq -r .password)"
+DB_PASS_ENC="$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$DB_PASS")"
 
 APP_KEY=""
 if [[ -n "${APP_KEY_SECRET_ARN:-}" ]]; then
@@ -59,6 +60,10 @@ cd "$INSTALL_DIR"
 
 cat > docker-compose.override.yml <<EOF
 services:
+  database:
+    profiles: ["disabled"]
+  cache:
+    profiles: ["disabled"]
   application:
     environment:
       APP_KEY: "${APP_KEY}"
@@ -67,7 +72,7 @@ services:
       CONSOLE_HOST: "${CONSOLE_HOST}"
       APP_ENV: "production"
       APP_DEBUG: "false"
-      DATABASE_URL: "mysql://${DB_USER}:${DB_PASS}@${DB_HOST}/${DB_NAME}"
+      DATABASE_URL: "mysql://${DB_USER}:${DB_PASS_ENC}@${DB_HOST}/${DB_NAME}"
       REDIS_HOST: "${REDIS_HOST}"
       REDIS_URL: "tcp://${REDIS_HOST}:6379"
       CACHE_DRIVER: "redis"
@@ -86,7 +91,7 @@ services:
     restart: unless-stopped
   queue:
     environment:
-      DATABASE_URL: "mysql://${DB_USER}:${DB_PASS}@${DB_HOST}/${DB_NAME}"
+      DATABASE_URL: "mysql://${DB_USER}:${DB_PASS_ENC}@${DB_HOST}/${DB_NAME}"
       REDIS_HOST: "${REDIS_HOST}"
       REDIS_URL: "tcp://${REDIS_HOST}:6379"
       CACHE_DRIVER: "redis"
@@ -94,7 +99,7 @@ services:
     restart: unless-stopped
   scheduler:
     environment:
-      DATABASE_URL: "mysql://${DB_USER}:${DB_PASS}@${DB_HOST}/${DB_NAME}"
+      DATABASE_URL: "mysql://${DB_USER}:${DB_PASS_ENC}@${DB_HOST}/${DB_NAME}"
       REDIS_HOST: "${REDIS_HOST}"
       REDIS_URL: "tcp://${REDIS_HOST}:6379"
       CACHE_DRIVER: "redis"
