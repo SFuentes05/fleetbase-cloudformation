@@ -440,19 +440,12 @@ Resources:
       Type: String
       Value: !GetAtt Database.Endpoint.Address
 
-  SSMDBUser:
+  SSMDBSecretArn:
     Type: AWS::SSM::Parameter
     Properties:
-      Name: !Sub '/${Project}/${EnvironmentType}/db-user'
+      Name: !Sub '/${Project}/${EnvironmentType}/db-secret-arn'
       Type: String
-      Value: fleetbase
-
-  SSMDBPassword:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub '/${Project}/${EnvironmentType}/db-password'
-      Type: SecureString
-      Value: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:password}}'
+      Value: !Ref DatabaseSecret
 
   SSMDBName:
     Type: AWS::SSM::Parameter
