@@ -60,10 +60,6 @@ cd "$INSTALL_DIR"
 
 cat > docker-compose.override.yml <<EOF
 services:
-  database:
-    profiles: ["disabled"]
-  cache:
-    profiles: ["disabled"]
   application:
     environment:
       APP_KEY: "${APP_KEY}"

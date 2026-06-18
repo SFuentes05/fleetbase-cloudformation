@@ -29,10 +29,6 @@ fi
 
 cat > docker-compose.override.yml <<EOF
 services:
-  database:
-    profiles: ["disabled"]
-  cache:
-    profiles: ["disabled"]
   application:
     environment:
       APP_KEY: "${APP_KEY}"
@@ -72,8 +68,6 @@ services:
     restart: unless-stopped
 EOF
 
-docker compose stop database cache 2>/dev/null || true
-docker compose rm -f database cache 2>/dev/null || true
 docker compose up -d application queue scheduler socket console httpd
 sleep 30
 docker compose exec -T application bash -c "./deploy.sh"
