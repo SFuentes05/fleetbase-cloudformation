@@ -1,15 +1,13 @@
 #!/bin/bash
-# Fleetbase EC2 bootstrap — runs on first boot via CloudFormation UserData.
-# Config is pulled from SSM Parameter Store (written by the CloudFormation stack).
+# Fleetbase EC2 bootstrap — config via UserData env vars from CloudFormation.
 
 set -euo pipefail
 
 exec > >(tee /var/log/fleetbase-bootstrap.log) 2>&1
 
-PROJECT="${PROJECT}"
-ENVIRONMENT="${ENVIRONMENT}"
-AWS_REGION="${AWS_REGION}"
-SSM_PREFIX="/${PROJECT}/${ENVIRONMENT}"
+PROJECT="${PROJECT:-ulogistics}"
+ENVIRONMENT="${ENVIRONMENT:-production}"
+AWS_REGION="${AWS_REGION:-us-east-1}"
 INSTALL_DIR="/opt/fleetbase"
 FLEETBASE_REPO="${FLEETBASE_REPO:-https://github.com/fleetbase/fleetbase.git}"
 FLEETBASE_REF="${FLEETBASE_REF:-main}"
@@ -25,28 +23,32 @@ if ! command -v docker >/dev/null; then
 fi
 usermod -aG docker ubuntu || true
 
-get_param() {
-  aws ssm get-parameter --name "$1" --with-decryption --query Parameter.Value --output text --region "$AWS_REGION"
-}
+ROOT_DOMAIN="${ROOT_DOMAIN:?ROOT_DOMAIN required}"
+CONSOLE_SUB="${CONSOLE_SUB:?CONSOLE_SUB required}"
+API_SUB="${API_SUB:?API_SUB required}"
+ADMIN_EMAIL="${ADMIN_EMAIL:?ADMIN_EMAIL required}"
+DB_HOST="${DB_HOST:?DB_HOST required}"
+DB_NAME="${DB_NAME:-fleetbase}"
+DB_SECRET_ARN="${DB_SECRET_ARN:?DB_SECRET_ARN required}"
+REDIS_HOST="${REDIS_HOST:?REDIS_HOST required}"
+S3_BUCKET="${S3_BUCKET:?S3_BUCKET required}"
 
-ROOT_DOMAIN="$(get_param "${SSM_PREFIX}/root-domain")"
-CONSOLE_SUB="$(get_param "${SSM_PREFIX}/console-subdomain")"
-API_SUB="$(get_param "${SSM_PREFIX}/api-subdomain")"
-ADMIN_EMAIL="$(get_param "${SSM_PREFIX}/admin-email")"
 CONSOLE_HOST="https://${CONSOLE_SUB}.${ROOT_DOMAIN}"
 API_HOST="https://${API_SUB}.${ROOT_DOMAIN}"
-DB_HOST="$(get_param "${SSM_PREFIX}/db-host")"
-DB_SECRET_ARN="$(get_param "${SSM_PREFIX}/db-secret-arn")"
+
 DB_CREDS="$(aws secretsmanager get-secret-value --secret-id "$DB_SECRET_ARN" --query SecretString --output text --region "$AWS_REGION")"
 DB_USER="$(echo "$DB_CREDS" | jq -r .username)"
 DB_PASS="$(echo "$DB_CREDS" | jq -r .password)"
-DB_NAME="$(get_param "${SSM_PREFIX}/db-name")"
-REDIS_HOST="$(get_param "${SSM_PREFIX}/redis-host")"
-S3_BUCKET="$(get_param "${SSM_PREFIX}/s3-bucket")"
-APP_KEY="$(get_param "${SSM_PREFIX}/app-key")"
-if [[ "$APP_KEY" == *"CHANGEME"* ]]; then
+
+APP_KEY=""
+if [[ -n "${APP_KEY_SECRET_ARN:-}" ]]; then
+  APP_KEY="$(aws secretsmanager get-secret-value --secret-id "$APP_KEY_SECRET_ARN" --query SecretString --output text --region "$AWS_REGION" || true)"
+fi
+if [[ -z "$APP_KEY" || "$APP_KEY" == *"CHANGEME"* ]]; then
   APP_KEY="$(docker run --rm fleetbase/fleetbase-api:latest php artisan key:generate --show)"
-  aws ssm put-parameter --name "${SSM_PREFIX}/app-key" --type String --value "$APP_KEY" --overwrite --region "$AWS_REGION"
+  if [[ -n "${APP_KEY_SECRET_ARN:-}" ]]; then
+    aws secretsmanager put-secret-value --secret-id "$APP_KEY_SECRET_ARN" --secret-string "$APP_KEY" --region "$AWS_REGION"
+  fi
 fi
 
 mkdir -p "$INSTALL_DIR"
@@ -172,15 +174,7 @@ ln -sf /etc/nginx/sites-available/fleetbase /etc/nginx/sites-enabled/fleetbase
 rm -f /etc/nginx/sites-enabled/default
 nginx -t && systemctl reload nginx
 
-if getent hosts "${CONSOLE_SUB}.${ROOT_DOMAIN}" >/dev/null && curl -sf "http://${CONSOLE_SUB}.${ROOT_DOMAIN}" >/dev/null; then
-  certbot --nginx \
-    -d "${CONSOLE_SUB}.${ROOT_DOMAIN}" \
-    -d "${API_SUB}.${ROOT_DOMAIN}" \
-    --non-interactive \
-    --agree-tos \
-    -m "${ADMIN_EMAIL}" || true
-fi
-
 echo "==> Fleetbase bootstrap complete"
 echo "Console: ${CONSOLE_HOST}"
 echo "API: ${API_HOST}"
+echo "Point DNS A records for ${CONSOLE_SUB} and ${API_SUB} to this server's public IP"

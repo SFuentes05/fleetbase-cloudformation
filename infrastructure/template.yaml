@@ -378,12 +378,6 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - ssm:GetParameter
-                  - ssm:GetParameters
-                  - ssm:GetParametersByPath
-                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Project}/${EnvironmentType}/*'
-              - Effect: Allow
-                Action:
                   - s3:PutObject
                   - s3:GetObject
                   - s3:DeleteObject
@@ -394,6 +388,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - secretsmanager:GetSecretValue
+                  - secretsmanager:PutSecretValue
                 Resource:
                   - !Ref DatabaseSecret
                   - !Ref AppKeySecret
@@ -404,78 +399,13 @@ Resources:
       Roles:
         - !Ref EC2Role
 
-  SSMRootDomain:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub '/${Project}/${EnvironmentType}/root-domain'
-      Type: String
-      Value: !Ref RootDomainName
-
-  SSMConsoleSubdomain:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub '/${Project}/${EnvironmentType}/console-subdomain'
-      Type: String
-      Value: !Ref ConsoleSubdomain
-
-  SSMApiSubdomain:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub '/${Project}/${EnvironmentType}/api-subdomain'
-      Type: String
-      Value: !Ref ApiSubdomain
-
-  SSMAdminEmail:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub '/${Project}/${EnvironmentType}/admin-email'
-      Type: String
-      Value: !Ref AdminEmail
-
-  SSMDBHost:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub '/${Project}/${EnvironmentType}/db-host'
-      Type: String
-      Value: !GetAtt Database.Endpoint.Address
-
-  SSMDBSecretArn:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub '/${Project}/${EnvironmentType}/db-secret-arn'
-      Type: String
-      Value: !Ref DatabaseSecret
-
-  SSMDBName:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub '/${Project}/${EnvironmentType}/db-name'
-      Type: String
-      Value: fleetbase
-
-  SSMRedisHost:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub '/${Project}/${EnvironmentType}/redis-host'
-      Type: String
-      Value: !GetAtt Redis.RedisEndpoint.Address
-
-  SSMS3Bucket:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub '/${Project}/${EnvironmentType}/s3-bucket'
-      Type: String
-      Value: !Ref UploadsBucket
-
-  SSMAppKey:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub '/${Project}/${EnvironmentType}/app-key'
-      Type: String
-      Value: !Sub '{{resolve:secretsmanager:${AppKeySecret}:SecretString}}'
-
   FleetbaseInstance:
     Type: AWS::EC2::Instance
+    DependsOn:
+      - Database
+      - Redis
+      - DatabaseSecret
+      - AppKeySecret
     Properties:
       InstanceType: !Ref InstanceType
       ImageId: !Sub '{{resolve:ssm:/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id}}'
@@ -504,6 +434,16 @@ Resources:
               export ENVIRONMENT=${EnvironmentType}
               export AWS_REGION=${AWS::Region}
               export FLEETBASE_REF=${FleetbaseGitRef}
+              export ROOT_DOMAIN=${RootDomainName}
+              export CONSOLE_SUB=${ConsoleSubdomain}
+              export API_SUB=${ApiSubdomain}
+              export ADMIN_EMAIL=${AdminEmail}
+              export DB_HOST=${Database.Endpoint.Address}
+              export DB_NAME=fleetbase
+              export DB_SECRET_ARN=${DatabaseSecret}
+              export REDIS_HOST=${Redis.RedisEndpoint.Address}
+              export S3_BUCKET=${UploadsBucket}
+              export APP_KEY_SECRET_ARN=${AppKeySecret}
               apt-get update -y
               apt-get install -y curl git awscli
               if ${UseRemoteBootstrap}; then
@@ -511,7 +451,7 @@ Resources:
                 chmod +x /tmp/bootstrap.sh
                 /tmp/bootstrap.sh
               else
-                echo "ERROR: Set DeploymentRepoUrl to the raw GitHub URL of infrastructure/scripts/bootstrap.sh"
+                echo "ERROR: Set DeploymentRepoUrl"
                 exit 1
               fi
             - UseRemoteBootstrap: !If [HasDeploymentRepo, 'true', 'false']
