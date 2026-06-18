@@ -1,0 +1,590 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Self-hosted Fleetbase on AWS (open source, no Marketplace).
+  EC2 + Docker Compose + RDS MySQL + ElastiCache Redis + S3.
+
+Parameters:
+  Project:
+    Type: String
+    Default: ulogistics
+    MinLength: 3
+    MaxLength: 14
+    AllowedPattern: '[a-zA-Z0-9]+'
+    Description: Short project name used in resource names.
+
+  EnvironmentType:
+    Type: String
+    Default: production
+    AllowedValues: [development, staging, production]
+
+  RootDomainName:
+    Type: String
+    Default: unitedlogistics.com.do
+    Description: Root domain (e.g. unitedlogistics.com.do).
+
+  ConsoleSubdomain:
+    Type: String
+    Default: up
+    Description: Console hostname prefix (up.example.com).
+
+  ApiSubdomain:
+    Type: String
+    Default: api
+    Description: API hostname prefix (api.example.com).
+
+  AdminEmail:
+    Type: String
+    Description: Email for Let's Encrypt certificate registration.
+    AllowedPattern: '^[^@]+@[^@]+\.[^@]+$'
+
+  DeploymentRepoUrl:
+    Type: String
+    Description: >
+      Raw URL to bootstrap.sh (push this repo to GitHub and paste the raw URL).
+    Default: ''
+
+  FleetbaseGitRef:
+    Type: String
+    Default: main
+    Description: Git branch or tag of fleetbase/fleetbase to deploy.
+
+  InstanceType:
+    Type: String
+    Default: t3.large
+    AllowedValues: [t3.medium, t3.large, t3.xlarge, m6i.large]
+
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.small
+
+  CacheNodeType:
+    Type: String
+    Default: cache.t3.small
+
+  DBAllocatedStorage:
+    Type: Number
+    Default: 50
+    MinValue: 20
+    MaxValue: 1000
+
+  DBMultiAZ:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+  DBBackupRetention:
+    Type: Number
+    Default: 14
+    MinValue: 1
+    MaxValue: 35
+
+  KeyPairName:
+    Type: String
+    Default: ''
+    Description: Optional EC2 key pair for SSH access.
+
+  HostedZoneId:
+    Type: String
+    Default: ''
+    Description: Optional Route53 hosted zone ID for automatic DNS A records.
+
+Conditions:
+  HasKeyPair: !Not [!Equals [!Ref KeyPairName, '']]
+  HasHostedZone: !Not [!Equals [!Ref HostedZoneId, '']]
+  HasDeploymentRepo: !Not [!Equals [!Ref DeploymentRepoUrl, '']]
+  IsProduction: !Equals [!Ref EnvironmentType, production]
+  EnableMultiAZ: !Equals [!Ref DBMultiAZ, 'true']
+
+Mappings:
+  SubnetConfig:
+    VPC:
+      CIDR: 10.20.0.0/16
+    PublicSubnetA:
+      CIDR: 10.20.1.0/24
+    PublicSubnetB:
+      CIDR: 10.20.2.0/24
+    PrivateSubnetA:
+      CIDR: 10.20.11.0/24
+    PrivateSubnetB:
+      CIDR: 10.20.12.0/24
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !FindInMap [SubnetConfig, VPC, CIDR]
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${Project}-${EnvironmentType}-vpc'
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !FindInMap [SubnetConfig, PublicSubnetA, CIDR]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${Project}-${EnvironmentType}-public-a'
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !FindInMap [SubnetConfig, PublicSubnetB, CIDR]
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${Project}-${EnvironmentType}-public-b'
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !FindInMap [SubnetConfig, PrivateSubnetA, CIDR]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub '${Project}-${EnvironmentType}-private-a'
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !FindInMap [SubnetConfig, PrivateSubnetB, CIDR]
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: !Sub '${Project}-${EnvironmentType}-private-b'
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetBRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  NatEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEIP.AllocationId
+      SubnetId: !Ref PublicSubnetA
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnetARouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnetBRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTable
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Fleetbase EC2 web access
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub '${Project}-${EnvironmentType}-ec2-sg'
+
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: RDS MySQL access from Fleetbase EC2
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+
+  CacheSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Redis access from Fleetbase EC2
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Fleetbase RDS subnets
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+
+  DatabaseSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${Project}/${EnvironmentType}/database'
+      Description: Fleetbase RDS credentials
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username":"fleetbase"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub '${Project}-${EnvironmentType}-mysql'
+      Engine: mysql
+      EngineVersion: '8.0.40'
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: !Ref DBAllocatedStorage
+      StorageType: gp3
+      StorageEncrypted: true
+      MasterUsername: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:username}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:password}}'
+      DBName: fleetbase
+      VPCSecurityGroups:
+        - !Ref DatabaseSecurityGroup
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      MultiAZ: !If [EnableMultiAZ, true, false]
+      BackupRetentionPeriod: !Ref DBBackupRetention
+      DeletionProtection: !If [IsProduction, true, false]
+      PubliclyAccessible: false
+      AutoMinorVersionUpgrade: true
+
+  CacheSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      Description: Fleetbase Redis subnets
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+
+  Redis:
+    Type: AWS::ElastiCache::CacheCluster
+    Properties:
+      ClusterName: !Sub '${Project}-${EnvironmentType}-redis'
+      Engine: redis
+      CacheNodeType: !Ref CacheNodeType
+      NumCacheNodes: 1
+      VpcSecurityGroupIds:
+        - !Ref CacheSecurityGroup
+      CacheSubnetGroupName: !Ref CacheSubnetGroup
+
+  UploadsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub '${Project}-${EnvironmentType}-uploads-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+
+  AppKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${Project}/${EnvironmentType}/app-key'
+      Description: Laravel APP_KEY placeholder — regenerate on EC2 if needed
+      SecretString: 'base64:CHANGEME_RUN_php_artisan_key_generate_on_ec2'
+
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: FleetbaseInstancePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Project}/${EnvironmentType}/*'
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt UploadsBucket.Arn
+                  - !Sub '${UploadsBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref DatabaseSecret
+                  - !Ref AppKeySecret
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2Role
+
+  SSMRootDomain:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${Project}/${EnvironmentType}/root-domain'
+      Type: String
+      Value: !Ref RootDomainName
+
+  SSMConsoleSubdomain:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${Project}/${EnvironmentType}/console-subdomain'
+      Type: String
+      Value: !Ref ConsoleSubdomain
+
+  SSMApiSubdomain:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${Project}/${EnvironmentType}/api-subdomain'
+      Type: String
+      Value: !Ref ApiSubdomain
+
+  SSMAdminEmail:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${Project}/${EnvironmentType}/admin-email'
+      Type: String
+      Value: !Ref AdminEmail
+
+  SSMDBHost:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${Project}/${EnvironmentType}/db-host'
+      Type: String
+      Value: !GetAtt Database.Endpoint.Address
+
+  SSMDBUser:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${Project}/${EnvironmentType}/db-user'
+      Type: String
+      Value: fleetbase
+
+  SSMDBPassword:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${Project}/${EnvironmentType}/db-password'
+      Type: SecureString
+      Value: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:password}}'
+
+  SSMDBName:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${Project}/${EnvironmentType}/db-name'
+      Type: String
+      Value: fleetbase
+
+  SSMRedisHost:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${Project}/${EnvironmentType}/redis-host'
+      Type: String
+      Value: !GetAtt Redis.RedisEndpoint.Address
+
+  SSMS3Bucket:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${Project}/${EnvironmentType}/s3-bucket'
+      Type: String
+      Value: !Ref UploadsBucket
+
+  SSMAppKey:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${Project}/${EnvironmentType}/app-key'
+      Type: String
+      Value: !Sub '{{resolve:secretsmanager:${AppKeySecret}:SecretString}}'
+
+  FleetbaseInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Sub '{{resolve:ssm:/aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id}}'
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref 'AWS::NoValue']
+      SubnetId: !Ref PublicSubnetA
+      SecurityGroupIds:
+        - !Ref ALBSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 100
+            VolumeType: gp3
+            Encrypted: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${Project}-${EnvironmentType}-fleetbase'
+      UserData:
+        Fn::Base64:
+          Fn::Sub:
+            - |
+              #!/bin/bash
+              set -euo pipefail
+              exec > >(tee /var/log/fleetbase-userdata.log) 2>&1
+              export PROJECT=${Project}
+              export ENVIRONMENT=${EnvironmentType}
+              export AWS_REGION=${AWS::Region}
+              export FLEETBASE_REF=${FleetbaseGitRef}
+              apt-get update -y
+              apt-get install -y curl git awscli
+              if ${UseRemoteBootstrap}; then
+                curl -fsSL "${DeploymentRepoUrl}" -o /tmp/bootstrap.sh
+                chmod +x /tmp/bootstrap.sh
+                /tmp/bootstrap.sh
+              else
+                echo "ERROR: Set DeploymentRepoUrl to the raw GitHub URL of infrastructure/scripts/bootstrap.sh"
+                exit 1
+              fi
+            - UseRemoteBootstrap: !If [HasDeploymentRepo, 'true', 'false']
+
+  FleetbaseEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref FleetbaseInstance
+
+  ConsoleDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasHostedZone
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub '${ConsoleSubdomain}.${RootDomainName}.'
+      Type: A
+      TTL: 300
+      ResourceRecords:
+        - !Ref FleetbaseEIP
+
+  ApiDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasHostedZone
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub '${ApiSubdomain}.${RootDomainName}.'
+      Type: A
+      TTL: 300
+      ResourceRecords:
+        - !Ref FleetbaseEIP
+
+Outputs:
+  ConsoleURL:
+    Description: Fleetbase console URL
+    Value: !Sub 'https://${ConsoleSubdomain}.${RootDomainName}'
+
+  ApiURL:
+    Description: Fleetbase API URL
+    Value: !Sub 'https://${ApiSubdomain}.${RootDomainName}'
+
+  InstanceId:
+    Description: EC2 instance ID (for SSM deploy commands)
+    Value: !Ref FleetbaseInstance
+
+  ElasticIP:
+    Description: Public IP — point DNS here if not using Route53
+    Value: !Ref FleetbaseEIP
+
+  DatabaseEndpoint:
+    Description: RDS endpoint
+    Value: !GetAtt Database.Endpoint.Address
+
+  RedisEndpoint:
+    Description: ElastiCache endpoint
+    Value: !GetAtt Redis.RedisEndpoint.Address
+
+  S3BucketName:
+    Description: Uploads bucket
+    Value: !Ref UploadsBucket
+
+  DatabaseSecretArn:
+    Description: RDS credentials in Secrets Manager
+    Value: !Ref DatabaseSecret
+
+  SSMSessionCommand:
+    Description: Connect to the server via SSM (no SSH key required)
+    Value: !Sub 'aws ssm start-session --target ${FleetbaseInstance} --region ${AWS::Region}'

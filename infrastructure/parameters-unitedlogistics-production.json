@@ -1,0 +1,62 @@
+[
+  {
+    "ParameterKey": "Project",
+    "ParameterValue": "ulogistics"
+  },
+  {
+    "ParameterKey": "EnvironmentType",
+    "ParameterValue": "production"
+  },
+  {
+    "ParameterKey": "RootDomainName",
+    "ParameterValue": "unitedlogistics.com.do"
+  },
+  {
+    "ParameterKey": "ConsoleSubdomain",
+    "ParameterValue": "up"
+  },
+  {
+    "ParameterKey": "ApiSubdomain",
+    "ParameterValue": "api"
+  },
+  {
+    "ParameterKey": "AdminEmail",
+    "ParameterValue": "sfuentes@assetmg.tech"
+  },
+  {
+    "ParameterKey": "DeploymentRepoUrl",
+    "ParameterValue": "https://raw.githubusercontent.com/SFuentes05/fleetbase-cloudformation/main/infrastructure/scripts/bootstrap.sh"
+  },
+  {
+    "ParameterKey": "FleetbaseGitRef",
+    "ParameterValue": "main"
+  },
+  {
+    "ParameterKey": "InstanceType",
+    "ParameterValue": "t3.large"
+  },
+  {
+    "ParameterKey": "DBInstanceClass",
+    "ParameterValue": "db.t3.small"
+  },
+  {
+    "ParameterKey": "CacheNodeType",
+    "ParameterValue": "cache.t3.small"
+  },
+  {
+    "ParameterKey": "DBAllocatedStorage",
+    "ParameterValue": "50"
+  },
+  {
+    "ParameterKey": "DBMultiAZ",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "DBBackupRetention",
+    "ParameterValue": "14"
+  },
+  {
+    "ParameterKey": "HostedZoneId",
+    "ParameterValue": ""
+  }
+]
