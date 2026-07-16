@@ -9,11 +9,11 @@
   },
   {
     "ParameterKey": "RootDomainName",
-    "ParameterValue": "unitedlogistics.com.do"
+    "ParameterValue": "unitedsoftware.lat"
   },
   {
     "ParameterKey": "ConsoleSubdomain",
-    "ParameterValue": "up"
+    "ParameterValue": "fleet"
   },
   {
     "ParameterKey": "ApiSubdomain",
